@@ -4,7 +4,32 @@ import { _internal } from "../index.mjs"
 
 const { quotasToUsage } = _internal
 
-test("full quotas response maps to four windows", () => {
+test("current live response: weekly + search, subscription suppressed", () => {
+  const { windows } = quotasToUsage({
+    subscription: { limit: 500, requests: 0, renewsAt: "2026-11-09T12:08:28.710Z" },
+    search: { hourly: { limit: 250, requests: 0, renewsAt: "2026-11-09T08:08:28.711Z" } },
+    planWeeklyLimit: { nextRegenAt: "2026-11-09T08:59:39.000Z", percentRemaining: 38.65030857142857, nextRegenPercent: 2 },
+  })
+
+  assert.equal(windows.length, 2)
+
+  const weekly = windows[0]
+  assert.equal(weekly.name, "weekly")
+  assert.equal(weekly.used, 61) // 100 - 38.65
+  assert.equal(weekly.resetsAt, "2026-11-09T08:59:39.000Z")
+  assert.equal(weekly.span, 7 * 24 * 3600)
+  assert.equal(weekly.display, "38.7% credits remaining")
+
+  const search = windows[1]
+  assert.equal(search.name, "search / hour")
+  assert.equal(search.used, 0)
+  assert.equal(search.aside, true)
+
+  // the retired subscription counter stays hidden while a real lane exists
+  assert.ok(!windows.some((w) => w.name === "billing period"))
+})
+
+test("legacy response: rollingFiveHourLimit + weeklyTokenLimit", () => {
   const { windows } = quotasToUsage({
     subscription: { limit: 600, requests: 12, renewsAt: "2026-04-30T20:18:54.144Z" },
     search: { hourly: { limit: 250, requests: 5, renewsAt: "2026-03-30T16:18:54.145Z" } },
@@ -12,9 +37,15 @@ test("full quotas response maps to four windows", () => {
     rollingFiveHourLimit: { nextTickAt: "2026-03-30T15:30:29.000Z", tickPercent: 0.05, remaining: 450, max: 600, limited: false },
   })
 
-  assert.equal(windows.length, 4)
+  assert.equal(windows.length, 3)
 
-  const five = windows[0]
+  const weekly = windows[0]
+  assert.equal(weekly.name, "weekly")
+  assert.equal(weekly.used, 20) // 100 - 80
+  assert.equal(weekly.resetsAt, "2026-03-30T16:20:39.000Z")
+  assert.equal(weekly.span, 7 * 24 * 3600)
+
+  const five = windows[1]
   assert.equal(five.name, "5 hours")
   assert.equal(five.used, 25) // (600-450)/600
   assert.equal(five.resetsAt, "2026-03-30T15:30:29.000Z")
@@ -22,21 +53,21 @@ test("full quotas response maps to four windows", () => {
   assert.equal(five.display, "150 / 600 requests")
   assert.equal(five.aside, undefined)
 
-  const weekly = windows[1]
-  assert.equal(weekly.name, "weekly")
-  assert.equal(weekly.used, 20) // 100 - 80
-  assert.equal(weekly.resetsAt, "2026-03-30T16:20:39.000Z")
-  assert.equal(weekly.span, 7 * 24 * 3600)
-
   const search = windows[2]
   assert.equal(search.name, "search / hour")
   assert.equal(search.used, 2) // 5/250
   assert.equal(search.aside, true)
+})
 
-  const sub = windows[3]
-  assert.equal(sub.name, "billing period")
-  assert.equal(sub.used, 2) // 12/600
-  assert.equal(sub.aside, true)
+test("planWeeklyLimit wins over weeklyTokenLimit but keeps its credits", () => {
+  const { windows } = quotasToUsage({
+    planWeeklyLimit: { percentRemaining: 50, nextRegenAt: "x", nextRegenPercent: 2 },
+    weeklyTokenLimit: { percentRemaining: 80, nextRegenAt: "y", maxCredits: "$24.00", remainingCredits: "$12.00" },
+  })
+  assert.equal(windows.length, 1)
+  assert.equal(windows[0].used, 50) // plan lane drives the percentage
+  assert.equal(windows[0].resetsAt, "x")
+  assert.equal(windows[0].display, "$12.00 / $24.00 credits")
 })
 
 test("docs example: subscription only", () => {
@@ -76,16 +107,15 @@ test("weekly percentRemaining clamps into 0-100 used", () => {
   assert.equal(w2[0].used, 100)
 })
 
-test("live-shaped response: credits display and freeToolCalls lane", () => {
+test("credit-denominated plan: credits display and freeToolCalls lane", () => {
   const { windows } = quotasToUsage({
     subscription: { limit: 500, requests: 0, renewsAt: "2026-10-14T13:27:11.450Z" },
     search: { hourly: { limit: 250, requests: 0, renewsAt: "2026-10-14T09:27:11.452Z" } },
     freeToolCalls: { limit: 0, requests: 0, renewsAt: "2026-10-15T08:27:11.456Z" },
     weeklyTokenLimit: { nextRegenAt: "2026-10-14T09:26:30.000Z", percentRemaining: 95.3678005, maxCredits: "$24.00", remainingCredits: "$22.88", nextRegenCredits: "$0.48" },
-    rollingFiveHourLimit: { nextTickAt: "2026-10-14T08:35:01.000Z", tickPercent: 0.05, remaining: 498.2, max: 500, limited: false },
   })
   // freeToolCalls.limit is 0 -> no window for it
-  assert.equal(windows.length, 4)
+  assert.equal(windows.length, 2)
   const weekly = windows.find((w) => w.name === "weekly")
   assert.equal(weekly.display, "$22.88 / $24.00 credits")
   assert.equal(weekly.used, 5) // 100 - 95.37

@@ -13,10 +13,10 @@ const DAY = 24 * HOUR
 // The anthropic endpoint only accepts hf:-prefixed catalog ids, so each
 // alias carries its last-known catalog target as id; the hook refreshes it.
 const DEFAULT_MODELS = {
-  "syn:large:text": { name: "Synthetic Large (text)", id: "hf:deepseek-ai/DeepSeek-V4.1-Flash", limit: { context: 256000, output: 32768 }, tool_call: true },
+  "syn:large:text": { name: "Synthetic Large (text)", id: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017", limit: { context: 256000, output: 32768 }, tool_call: true },
   "syn:small:text": { name: "Synthetic Small (text)", id: "hf:zai-org/GLM-4.7-Flash", limit: { context: 256000, output: 32768 }, tool_call: true },
   "syn:large:vision": { name: "Synthetic Large (vision)", id: "hf:moonshotai/Kimi-K3", limit: { context: 256000, output: 32768 }, tool_call: true },
-  "syn:small:vision": { name: "Synthetic Small (vision)", id: "hf:Qwen/Qwen3.8-27B", limit: { context: 256000, output: 32768 }, tool_call: true },
+  "syn:small:vision": { name: "Synthetic Small (vision)", id: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017", limit: { context: 256000, output: 32768 }, tool_call: true },
 }
 
 const quotaBody = (body) => (body && typeof body === "object" && body.data && typeof body.data === "object" ? body.data : body) || {}
@@ -28,15 +28,36 @@ const num = (n) => (typeof n === "number" ? Math.round(n * 10) / 10 : n)
 
 // GET /v2/quotas -> magpie usage result.
 // Response shape (all sections optional):
-//   subscription:        { limit, requests, renewsAt }              legacy per-billing-period counter
+//   planWeeklyLimit:     { percentRemaining, nextRegenAt, nextRegenPercent } weekly budget on percent-only plans
+//   weeklyTokenLimit:    { percentRemaining, nextRegenAt, maxCredits, remainingCredits } credit-denominated variant
 //   search.hourly:       { limit, requests, renewsAt }              search quota, separate lane
 //   freeToolCalls:       { limit, requests, renewsAt }              free tool-call lane, when granted
-//   weeklyTokenLimit:    { percentRemaining, nextRegenAt, maxCredits, remainingCredits }
-//   rollingFiveHourLimit:{ remaining, max, limited, nextTickAt }    burst request limit
+//   rollingFiveHourLimit:{ remaining, max, limited, nextTickAt }    retired burst limit, older responses only
+//   subscription:        { limit, requests, renewsAt }              retired counter, still echoed near 0
 function quotasToUsage(body) {
   const q = quotaBody(body)
   const windows = []
 
+  // Weekly credit budget: planWeeklyLimit wins over weeklyTokenLimit, the
+  // same precedence Octofriend uses; the token variant supplies the credit
+  // figures when both appear.
+  const token = q.weeklyTokenLimit
+  const weekly = q.planWeeklyLimit ?? token
+  if (weekly && typeof weekly.percentRemaining === "number") {
+    const usedPct = Math.min(100, Math.max(0, 100 - weekly.percentRemaining))
+    windows.push({
+      name: "weekly",
+      used: Math.round(usedPct),
+      resetsAt: weekly.nextRegenAt,
+      span: 7 * DAY,
+      display:
+        token?.remainingCredits && token?.maxCredits
+          ? `${num(token.remainingCredits)} / ${num(token.maxCredits)} credits`
+          : `${num(weekly.percentRemaining)}% credits remaining`,
+    })
+  }
+
+  // Retired on current plans but still present in older responses.
   const five = q.rollingFiveHourLimit
   if (five && typeof five.max === "number" && five.max > 0) {
     const usedReqs = Math.max(0, five.max - (typeof five.remaining === "number" ? five.remaining : five.max))
@@ -46,21 +67,6 @@ function quotasToUsage(body) {
       resetsAt: five.nextTickAt,
       span: 5 * HOUR,
       display: `${num(usedReqs)} / ${num(five.max)} requests`,
-    })
-  }
-
-  const weekly = q.weeklyTokenLimit
-  if (weekly && typeof weekly.percentRemaining === "number") {
-    const usedPct = Math.min(100, Math.max(0, 100 - weekly.percentRemaining))
-    windows.push({
-      name: "weekly",
-      used: Math.round(usedPct),
-      resetsAt: weekly.nextRegenAt,
-      span: 7 * DAY,
-      display:
-        weekly.remainingCredits && weekly.maxCredits
-          ? `${num(weekly.remainingCredits)} / ${num(weekly.maxCredits)} credits`
-          : `${Math.round(weekly.percentRemaining)}% credits remaining`,
     })
   }
 
@@ -88,14 +94,16 @@ function quotasToUsage(body) {
     })
   }
 
+  // Retired per-period counter: still echoed but stuck near 0, so it is only
+  // a fallback for responses that carry no real quota lane.
   const sub = q.subscription
-  if (sub && typeof sub.limit === "number" && sub.limit > 0) {
+  if (sub && typeof sub.limit === "number" && sub.limit > 0 && !windows.some((w) => !w.aside)) {
     windows.push({
       name: "billing period",
       used: pct(sub.requests ?? 0, sub.limit),
       resetsAt: sub.renewsAt,
       display: `${sub.requests ?? 0} / ${sub.limit} requests`,
-      aside: true, // legacy counter; the 5h and weekly lanes above are authoritative
+      aside: true,
     })
   }
 

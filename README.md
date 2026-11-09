@@ -17,10 +17,11 @@ magpie quota                    # synthetic · 5h n% ↻… · weekly n% ↻…
 
 | Quota lane | Window | Meaning |
 | --- | --- | --- |
-| `rollingFiveHourLimit` | `5 hours` | Burst request limit; refills ~5% every 15 min (`nextTickAt` is shown as the countdown) |
-| `weeklyTokenLimit` | `weekly` | Weekly credit budget; `used = 100 − percentRemaining` |
+| `planWeeklyLimit` | `weekly` | Weekly credit budget on percent-only plans; `used = 100 − percentRemaining`, `nextRegenAt`/`nextRegenPercent` drive the countdown. Preferred over `weeklyTokenLimit` when both appear |
+| `weeklyTokenLimit` | `weekly` | Credit-denominated variant on usage-based plans; contributes `remainingCredits`/`maxCredits` to the display |
+| `rollingFiveHourLimit` | `5 hours` | Retired burst request limit; still parsed for older responses |
 | `search.hourly` | `search / hour` | Hourly search quota (informational, `aside`) |
-| `subscription` | `billing period` | Legacy per-period request counter (informational, `aside`) |
+| `subscription` | `billing period` | Retired per-period request counter, still echoed near 0; only shown as a fallback when no real lane is present |
 
 ## API used
 
