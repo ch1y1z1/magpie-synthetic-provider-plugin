@@ -17,7 +17,8 @@ test("current live response: weekly + search, subscription suppressed", () => {
   const weekly = windows[0]
   assert.equal(weekly.name, "7 days")
   assert.equal(weekly.used, 61) // 100 - 38.65
-  assert.equal(weekly.resetsAt, "2026-11-09T08:59:39.000Z")
+  // full again after ceil(61.35/2)=31 ticks: nextRegenAt + 30*202min
+  assert.equal(weekly.resetsAt, "2026-11-13T13:59:39.000Z")
   assert.equal(weekly.span, 7 * 24 * 3600)
   assert.equal(weekly.display, "38.7% credits remaining")
 
@@ -76,6 +77,29 @@ test("planWeeklyLimit wins over weeklyTokenLimit but keeps its credits", () => {
   assert.equal(windows[0].limit, 24)
   assert.equal(windows[0].unit, "credits")
   assert.equal(result.balance, "$12.00")
+})
+
+test("credit plan projects full regen from nextRegenCredits", () => {
+  const { windows } = quotasToUsage({
+    weeklyTokenLimit: {
+      nextRegenAt: "2026-11-09T08:59:39.000Z",
+      percentRemaining: 50,
+      maxCredits: "$24.00",
+      remainingCredits: "$12.00",
+      nextRegenCredits: "$0.48",
+    },
+  })
+  // $12 gap / $0.48 a tick = 25 ticks; the last lands 24*202min after nextRegenAt
+  assert.equal(windows[0].resetsAt, "2026-11-12T17:47:39.000Z")
+})
+
+test("already-full and missing regen data keep nextRegenAt", () => {
+  const { windows } = quotasToUsage({
+    planWeeklyLimit: { percentRemaining: 100, nextRegenAt: "2026-11-09T08:59:39.000Z", nextRegenPercent: 2 },
+  })
+  assert.equal(windows[0].resetsAt, "2026-11-09T08:59:39.000Z")
+  const { windows: w2 } = quotasToUsage({ planWeeklyLimit: { percentRemaining: 40 } })
+  assert.equal(w2[0].resetsAt, undefined)
 })
 
 test("docs example: subscription only", () => {

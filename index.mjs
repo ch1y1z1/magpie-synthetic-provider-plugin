@@ -29,6 +29,11 @@ const num = (n) => (typeof n === "number" ? Math.round(n * 10) / 10 : n)
 // "$22.88"-style credit strings to numbers, for amount/limit and balance.
 const credits = (s) => (typeof s === "string" ? Number(s.replace(/[^0-9.]/g, "")) : NaN)
 
+// The weekly budget never resets: it refills a fixed slice of the limit
+// every ~202 minutes (synthetic.new/rate-limits — +2% a tick, one week from
+// empty to full).
+const REGEN_TICK_SECS = 202 * 60
+
 // GET /v2/quotas -> magpie usage result.
 // Response shape (all sections optional):
 //   planWeeklyLimit:     { percentRemaining, nextRegenAt, nextRegenPercent } weekly budget on percent-only plans
@@ -44,18 +49,27 @@ function quotasToUsage(body) {
 
   // Weekly credit budget: planWeeklyLimit wins over weeklyTokenLimit, the
   // same precedence Octofriend uses; the token variant supplies the credit
-  // figures when both appear. nextRegenAt is the next refill tick; magpie
-  // draws the bar, pace and trend from name/used/resetsAt/span.
+  // figures when both appear. Since nothing resets, the window's resetsAt is
+  // when the budget would be full again at the refill rate — the next of
+  // ceil(gap/step) ticks lands at nextRegenAt, each REGEN_TICK_SECS apart.
   const token = q.weeklyTokenLimit
-  const weekly = q.planWeeklyLimit ?? token
+  const plan = q.planWeeklyLimit
+  const weekly = plan ?? token
   if (weekly && typeof weekly.percentRemaining === "number") {
     const usedPct = Math.min(100, Math.max(0, 100 - weekly.percentRemaining))
     const left = credits(token?.remainingCredits)
     const max = credits(token?.maxCredits)
+    const nextTick = Date.parse(weekly.nextRegenAt ?? "")
+    const gap = plan ? 100 - weekly.percentRemaining : max - left
+    const step = plan ? weekly.nextRegenPercent : credits(token?.nextRegenCredits)
+    const resetsAt =
+      nextTick && gap > 0 && step > 0
+        ? new Date(nextTick + (Math.ceil(gap / step) - 1) * REGEN_TICK_SECS * 1000).toISOString()
+        : weekly.nextRegenAt
     windows.push({
       name: "7 days",
       used: Math.round(usedPct),
-      resetsAt: weekly.nextRegenAt,
+      resetsAt,
       span: 7 * DAY,
       display:
         token?.remainingCredits && token?.maxCredits
