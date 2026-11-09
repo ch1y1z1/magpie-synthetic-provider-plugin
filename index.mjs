@@ -26,6 +26,9 @@ const pct = (used, max) => Math.round((used / max) * 100)
 // Quota counters refill fractionally (e.g. 5% per 15 min); round for display.
 const num = (n) => (typeof n === "number" ? Math.round(n * 10) / 10 : n)
 
+// "$22.88"-style credit strings to numbers, for amount/limit and balance.
+const credits = (s) => (typeof s === "string" ? Number(s.replace(/[^0-9.]/g, "")) : NaN)
+
 // GET /v2/quotas -> magpie usage result.
 // Response shape (all sections optional):
 //   planWeeklyLimit:     { percentRemaining, nextRegenAt, nextRegenPercent } weekly budget on percent-only plans
@@ -36,25 +39,33 @@ const num = (n) => (typeof n === "number" ? Math.round(n * 10) / 10 : n)
 //   subscription:        { limit, requests, renewsAt }              retired counter, still echoed near 0
 function quotasToUsage(body) {
   const q = quotaBody(body)
-  const windows = []
+  const out = { windows: [] }
+  const windows = out.windows
 
   // Weekly credit budget: planWeeklyLimit wins over weeklyTokenLimit, the
   // same precedence Octofriend uses; the token variant supplies the credit
-  // figures when both appear.
+  // figures when both appear. nextRegenAt is the next refill tick; magpie
+  // draws the bar, pace and trend from name/used/resetsAt/span.
   const token = q.weeklyTokenLimit
   const weekly = q.planWeeklyLimit ?? token
   if (weekly && typeof weekly.percentRemaining === "number") {
     const usedPct = Math.min(100, Math.max(0, 100 - weekly.percentRemaining))
+    const left = credits(token?.remainingCredits)
+    const max = credits(token?.maxCredits)
     windows.push({
-      name: "weekly",
+      name: "7 days",
       used: Math.round(usedPct),
       resetsAt: weekly.nextRegenAt,
       span: 7 * DAY,
       display:
         token?.remainingCredits && token?.maxCredits
-          ? `${num(token.remainingCredits)} / ${num(token.maxCredits)} credits`
+          ? `${token.remainingCredits} / ${token.maxCredits} credits`
           : `${num(weekly.percentRemaining)}% credits remaining`,
+      ...(max > 0 && left >= 0 ? { amount: Math.round((max - left) * 100) / 100, limit: max, unit: "credits" } : {}),
     })
+    // usage-based plans say what is left in dollars: the card shows it as the
+    // balance, like DeepSeek's.
+    if (left > 0) out.balance = token.remainingCredits
   }
 
   // Retired on current plans but still present in older responses.
@@ -107,7 +118,7 @@ function quotasToUsage(body) {
     })
   }
 
-  return { windows }
+  return out
 }
 
 async function readQuotas(key) {

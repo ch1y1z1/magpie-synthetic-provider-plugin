@@ -5,16 +5,17 @@ import { _internal } from "../index.mjs"
 const { quotasToUsage } = _internal
 
 test("current live response: weekly + search, subscription suppressed", () => {
-  const { windows } = quotasToUsage({
+  const result = quotasToUsage({
     subscription: { limit: 500, requests: 0, renewsAt: "2026-11-09T12:08:28.710Z" },
     search: { hourly: { limit: 250, requests: 0, renewsAt: "2026-11-09T08:08:28.711Z" } },
     planWeeklyLimit: { nextRegenAt: "2026-11-09T08:59:39.000Z", percentRemaining: 38.65030857142857, nextRegenPercent: 2 },
   })
+  const { windows } = result
 
   assert.equal(windows.length, 2)
 
   const weekly = windows[0]
-  assert.equal(weekly.name, "weekly")
+  assert.equal(weekly.name, "7 days")
   assert.equal(weekly.used, 61) // 100 - 38.65
   assert.equal(weekly.resetsAt, "2026-11-09T08:59:39.000Z")
   assert.equal(weekly.span, 7 * 24 * 3600)
@@ -27,6 +28,8 @@ test("current live response: weekly + search, subscription suppressed", () => {
 
   // the retired subscription counter stays hidden while a real lane exists
   assert.ok(!windows.some((w) => w.name === "billing period"))
+  // percent-only plans report no dollar balance
+  assert.equal(result.balance, undefined)
 })
 
 test("legacy response: rollingFiveHourLimit + weeklyTokenLimit", () => {
@@ -40,7 +43,7 @@ test("legacy response: rollingFiveHourLimit + weeklyTokenLimit", () => {
   assert.equal(windows.length, 3)
 
   const weekly = windows[0]
-  assert.equal(weekly.name, "weekly")
+  assert.equal(weekly.name, "7 days")
   assert.equal(weekly.used, 20) // 100 - 80
   assert.equal(weekly.resetsAt, "2026-03-30T16:20:39.000Z")
   assert.equal(weekly.span, 7 * 24 * 3600)
@@ -60,14 +63,19 @@ test("legacy response: rollingFiveHourLimit + weeklyTokenLimit", () => {
 })
 
 test("planWeeklyLimit wins over weeklyTokenLimit but keeps its credits", () => {
-  const { windows } = quotasToUsage({
+  const result = quotasToUsage({
     planWeeklyLimit: { percentRemaining: 50, nextRegenAt: "x", nextRegenPercent: 2 },
     weeklyTokenLimit: { percentRemaining: 80, nextRegenAt: "y", maxCredits: "$24.00", remainingCredits: "$12.00" },
   })
+  const { windows } = result
   assert.equal(windows.length, 1)
   assert.equal(windows[0].used, 50) // plan lane drives the percentage
   assert.equal(windows[0].resetsAt, "x")
   assert.equal(windows[0].display, "$12.00 / $24.00 credits")
+  assert.equal(windows[0].amount, 12) // $24.00 - $12.00 consumed
+  assert.equal(windows[0].limit, 24)
+  assert.equal(windows[0].unit, "credits")
+  assert.equal(result.balance, "$12.00")
 })
 
 test("docs example: subscription only", () => {
@@ -116,7 +124,7 @@ test("credit-denominated plan: credits display and freeToolCalls lane", () => {
   })
   // freeToolCalls.limit is 0 -> no window for it
   assert.equal(windows.length, 2)
-  const weekly = windows.find((w) => w.name === "weekly")
+  const weekly = windows.find((w) => w.name === "7 days")
   assert.equal(weekly.display, "$22.88 / $24.00 credits")
   assert.equal(weekly.used, 5) // 100 - 95.37
 })
